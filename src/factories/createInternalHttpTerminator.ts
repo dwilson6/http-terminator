@@ -34,6 +34,7 @@ export default (
   const secureSockets = new Set<TLSSocket>();
 
   let terminating;
+  let runSocketCheckFunction;
 
   server.on('connection', (socket) => {
     if (terminating) {
@@ -43,6 +44,9 @@ export default (
 
       socket.once('close', () => {
         sockets.delete(socket);
+        if (typeof runSocketCheckFunction === 'function') {
+          runSocketCheckFunction();
+        }
       });
     }
   });
@@ -55,6 +59,9 @@ export default (
 
       socket.once('close', () => {
         secureSockets.delete(socket);
+        if (typeof runSocketCheckFunction === 'function') {
+          runSocketCheckFunction();
+        }
       });
     }
   });
@@ -72,6 +79,17 @@ export default (
     } else {
       secureSockets.delete(socket);
     }
+  };
+
+  const whenSocketsClosed = () => {
+    return new Promise<void>((resolve) => {
+      runSocketCheckFunction = () => {
+        if (!sockets.size && !secureSockets.size) {
+          runSocketCheckFunction = undefined;
+          resolve();
+        }
+      };
+    });
   };
 
   const terminate = async () => {
@@ -131,22 +149,26 @@ export default (
       destroySocket(socket);
     }
 
-    if (sockets.size) {
-      await delay(configuration.gracefulTerminationTimeout);
+    if (sockets.size || secureSockets.size) {
+      await Promise.race([
+        delay(configuration.gracefulTerminationTimeout),
+        whenSocketsClosed(),
+      ]);
 
-      for (const socket of sockets) {
-        destroySocket(socket);
+      if (sockets.size) {
+        for (const socket of sockets) {
+          destroySocket(socket);
+        }
+      }
+
+      if (secureSockets.size) {
+        for (const socket of secureSockets) {
+          destroySocket(socket);
+        }
       }
     }
 
-    if (secureSockets.size) {
-      await delay(configuration.gracefulTerminationTimeout);
-
-      for (const socket of secureSockets) {
-        destroySocket(socket);
-      }
-    }
-
+    // eslint-disable-next-line promise/prefer-await-to-callbacks
     server.close((error) => {
       if (error) {
         rejectTerminating(error);

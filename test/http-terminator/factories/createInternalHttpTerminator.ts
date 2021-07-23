@@ -241,3 +241,44 @@ test('empties internal socket collection for https server', async (t) => {
 
   await terminator.terminate();
 });
+
+// adapted from ndhoule's test in https://github.com/gajus/http-terminator/pull/25/
+test('closes immediately after in-flight connections are closed', async (t) => {
+  t.timeout(1_000);
+
+  const spy = sinon.spy(async (incomingMessage, outgoingMessage) => {
+    await delay(100);
+    outgoingMessage.end('foo');
+  });
+
+  const httpServer = await createHttpServer(spy);
+
+  t.true(httpServer.server.listening);
+
+  const terminator = createInternalHttpTerminator({
+    gracefulTerminationTimeout: 500,
+    server: httpServer.server,
+  });
+
+  got(httpServer.url);
+
+  await delay(50);
+
+  t.is(await httpServer.getConnections(), 1);
+
+  let terminated = false;
+  // eslint-disable-next-line promise/catch-or-return, promise/prefer-await-to-then
+  terminator.terminate().then((parameter) => {
+    terminated = true;
+
+    return parameter;
+  });
+
+  // Wait for outgoingMessage.end to be called, plus a few extra ms for the
+  // terminator to finish polling in-flight connections. (Do not, however, wait
+  // long enough to trigger graceful termination.)
+  await delay(75);
+
+  t.is(terminated, true);
+  t.is(await httpServer.getConnections(), 0);
+});
